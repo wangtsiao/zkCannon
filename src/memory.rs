@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Read;
 use std::rc::Rc;
-use crate::page::{CachedPage, hash_pair, PAGE_ADDR_MASK, PAGE_ADDR_SIZE, PAGE_KEY_SIZE, ZERO_HASHS};
+use crate::page::{CachedPage, hash_pair, PAGE_ADDR_MASK, PAGE_ADDR_SIZE, PAGE_KEY_SIZE, PAGE_SIZE, ZERO_HASHS};
 
 #[derive(Debug)]
 pub struct Memory {
@@ -15,6 +16,10 @@ pub struct Memory {
     // this prevents map lookups each instruction
     last_page_keys: [Option<u32>; 2],
     last_page: [Option<Rc<RefCell<CachedPage>>>; 2],
+
+    // for implement std::io::Read trait
+    addr: u32,
+    count: u32,
 }
 
 impl Memory {
@@ -25,6 +30,9 @@ impl Memory {
 
             last_page_keys: Default::default(), // default to invalid keys, to not match any pages
             last_page: Default::default(),
+
+            addr: 0,
+            count: 0,
         }
     }
 
@@ -224,4 +232,89 @@ impl Memory {
         let mut cached_page = cached_page.borrow_mut();
         cached_page.data[page_addr..page_addr+4].copy_from_slice(&v.to_be_bytes());
     }
+
+    pub fn usage(&self) -> String {
+        let total = self.pages.len() * PAGE_SIZE;
+        let unit = (1 << 10) as usize;
+        if total < unit {
+            return format!("{} B", total);
+        }
+
+        // KiB, MiB, GiB, TiB, ...
+        let (mut div, mut exp) = (unit, 0usize);
+        let mut n = total / div;
+        while n >= unit {
+            div *= unit;
+            exp += 1;
+            n /= unit;
+        }
+        let exp_table = b"KMGTPE";
+        return format!("{}, {}iB", total/div, exp_table[exp] as char);
+    }
+
+    pub fn read_memory_range(&mut self, addr: u32, count: u32) {
+        self.addr =  addr;
+        self.count = count;
+    }
+
+    pub fn set_memory_range(&mut self, mut addr: u32, mut r: Box<dyn Read>) -> Result<(), std::io::ErrorKind> {
+        loop {
+            let page_index = addr >> PAGE_ADDR_SIZE;
+            let page_addr = addr & (PAGE_ADDR_MASK as u32);
+            let cached_page = self.page_lookup(page_index);
+            let page = match cached_page {
+                None => {
+                    self.alloc_page(page_index)
+                }
+                Some(page) => {
+                    page
+                }
+            };
+
+            let mut page = page.borrow_mut();
+            page.invalidate_full();
+            let n = r.read(&mut page.data[(page_addr as usize)..]).unwrap();
+            if n == 0 {
+                return Ok(());
+            }
+            addr += n as u32;
+        }
+    }
 }
+
+impl Read for Memory {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.count == 0 {
+            return Ok(0usize);
+        }
+
+        let end_addr = self.addr + self.count;
+
+        let page_index = self.addr >> PAGE_ADDR_SIZE;
+        let (start, mut end) = (self.addr & (PAGE_ADDR_MASK as u32), PAGE_SIZE as u32);
+
+        if page_index == (end_addr >> PAGE_ADDR_SIZE) {
+            end = end_addr & (PAGE_ADDR_MASK as u32);
+        }
+
+        let cached_page = self.page_lookup(page_index);
+        let n = match cached_page {
+            None => {
+                let size = end - start;
+                let zero_vec = vec![0; size as usize];
+                buf.copy_from_slice(zero_vec.as_slice());
+                size
+            }
+            Some(cached_page) => {
+                let mut page = cached_page.borrow_mut();
+                buf.copy_from_slice(&page.data[(start as usize)..(end as usize)]);
+                end-start
+            }
+        };
+        self.addr += n;
+        self.count -= n;
+
+        Ok(n as usize)
+    }
+}
+

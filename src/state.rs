@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use crate::memory::Memory;
 use crate::page::{PAGE_ADDR_MASK, PAGE_SIZE};
 use log::debug;
@@ -19,7 +19,7 @@ trait PreimageOracle {
 }
 
 struct State {
-    memory: Memory,
+    memory: Box<Memory>,
 
     preimage_key: [u8; 32],
     preimage_offset: u32,
@@ -42,6 +42,16 @@ struct State {
 
     exited: bool,
     exit_code: u8,
+
+    // last_hint is optional metadata, and not part of the VM state itself.
+    // It is used to remember the last pre-image hint,
+    // so a VM can start from any state without fetching prior pre-images,
+    // and instead just repeat the last hint on setup,
+    // to make sure pre-image requests can be served.
+    // The first 4 bytes are a uin32 length prefix.
+    // Warning: the hint MAY NOT BE COMPLETE. I.e. this is buffered,
+    // and should only be read when len(LastHint) > 4 && uint32(LastHint[:4]) >= len(LastHint[4:])
+    last_hint: Vec<u8>,
 }
 
 pub struct InstrumentedState {
@@ -149,6 +159,7 @@ impl InstrumentedState {
                         let mem = self.state.memory.get_memory(addr);
                         let (data, mut data_len) =
                             self.read_preimage(self.state.preimage_key, self.state.preimage_offset);
+
                         let alignment = a1 & 3;
                         let space = 4 - alignment;
                         data_len = min(min(data_len, space), a2);
@@ -170,8 +181,98 @@ impl InstrumentedState {
                     }
                 }
             }
+            4004 => { // write
+                // args: a0 = fd, a1 = addr, a2 = count
+                // returns: v0 = written, v1 = err code
+                match a0 {
+                    FD_STDOUT => {
+                        self.state.memory.read_memory_range(a1, a2);
+                        match std::io::copy(self.state.memory.as_mut(), self.stdout_writer.as_mut()) {
+                            Err(e) => {
+                                panic!("read range from memory failed {}", e);
+                            }
+                            Ok(_) => {}
+                        }
+                        v0 = a2;
+                    }
+                    FD_STDERR => {
+                        self.state.memory.read_memory_range(a1, a2);
+                        match std::io::copy(self.state.memory.as_mut(), self.stderr_writer.as_mut()) {
+                            Err(e) => {
+                                panic!("read range from memory failed {}", e);
+                            }
+                            Ok(_) => {}
+                        }
+                        v0 = a2;
+                    }
+                    FD_HINT_WRITE => {
+                        self.state.memory.read_memory_range(a1, a2);
+                        let mut hint_data = Vec::<u8>::new();
+                        self.state.memory.read_to_end(&mut hint_data).unwrap();
+                        self.state.last_hint.extend(&hint_data);
+                        while self.state.last_hint.len() > 4 {
+                            // process while there is enough data to check if there are any hints.
+                            let mut hint_len_bytes = [0u8; 4];
+                            hint_len_bytes.copy_from_slice(&self.state.last_hint[..4]);
+                            let hint_len = u32::from_be_bytes(hint_len_bytes) as usize;
+                            if hint_len >= self.state.last_hint[4..].len() {
+                                let mut hint = Vec::<u8>::new();
+                                self.state.last_hint[4..(4 + hint_len)].clone_into(&mut hint);
+                                self.state.last_hint = self.state.last_hint.split_off(4+hint_len);
+                                self.preimage_oracle.hint(hint.as_slice());
+                            }
+                        }
+                    }
+                    FD_PREIMAGE_WRITE => {
+                        let addr = a1 & 0xFFffFFfc;
+                        self.track_memory_access(addr);
+                        let out_mem = self.state.memory.get_memory(addr);
+
+                        let alignment = a1 & 3;
+                        let space = 4 - alignment;
+                        a2 = min(a2, space); // at most write to 4 bytes
+                        let mut key = [0; 32];
+                        key.copy_from_slice(&self.state.preimage_key[(a2 as usize)..]);
+                        let dest_slice = &mut key[(32-a2 as usize)..];
+                        dest_slice.copy_from_slice(&out_mem.to_be_bytes());
+                        self.state.preimage_key = key;
+                        self.state.preimage_offset = 0;
+                        v0 = a2;
+                    }
+                    _ => {
+                        v0 = 0xFFffFFff;
+                        v1 = MIPS_EBADF;
+                    }
+                }
+            }
+            4055 => { // fcntl
+                // args: a0 = fd, a1 = cmd
+                if a1 == 3 { // F_GETFL: get file descriptor flags
+                    match a0 {
+                        FD_STDIN | FD_PREIMAGE_READ | FD_HINT_READ => {
+                            v0 = 0 // O_RDONLY
+                        }
+                        FD_STDOUT | FD_STDERR | FD_PREIMAGE_WRITE | FD_HINT_WRITE => {
+                            v0 = 1 // O_WRONLY
+                        }
+                        _ => {
+                            v0 = 0xFFffFFff;
+                            v1 = MIPS_EBADF;
+                        }
+                    }
+                } else {
+                    v0 = 0xFFffFFff;
+                    v1 = MIPS_EBADF;
+                }
+            }
             _ => {}
         }
+
+        self.state.registers[2] = v0;
+        self.state.registers[7] = v1;
+
+        self.state.pc = self.state.next_pc;
+        self.state.next_pc = self.state.next_pc + 4;
 
         Ok(())
     }

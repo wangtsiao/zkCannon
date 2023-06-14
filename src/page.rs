@@ -1,5 +1,5 @@
 use std::convert::TryInto;
-use std::ops::{Index, IndexMut, Range};
+use std::ops::{Index, IndexMut, Range, RangeFrom};
 use lazy_static::lazy_static;
 use sha3::{Digest, Sha3_256};
 use sha3::digest::{FixedOutput};
@@ -46,11 +46,26 @@ impl Index<Range<usize>> for Page {
     }
 }
 
+impl Index<RangeFrom<usize>> for Page {
+    type Output = [u8];
+
+    fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
 impl IndexMut<Range<usize>> for Page {
     fn index_mut(&mut self, index: Range<usize>) -> &mut [u8] {
         &mut self.0[index]
     }
 }
+
+impl IndexMut<RangeFrom<usize>> for Page {
+    fn index_mut(&mut self, index: RangeFrom<usize>) -> &mut [u8] {
+        &mut self.0[index]
+    }
+}
+
 
 impl Page {
     fn new() -> Page {
