@@ -1,8 +1,12 @@
-use std::io::{Read, Write};
+use std::io::{Read, stderr, stdout, Write};
 use crate::memory::Memory;
 use crate::page::{PAGE_ADDR_MASK, PAGE_SIZE};
-use log::debug;
+use log::{debug};
 use std::cmp::min;
+use std::fmt::{Display, Formatter};
+use elf::abi::PT_LOAD;
+use elf::endian::AnyEndian;
+use crate::witness::StepWitness;
 
 pub const FD_STDIN: u32 = 0;
 pub const FD_STDOUT: u32 = 1;
@@ -13,21 +17,21 @@ pub const FD_PREIMAGE_READ: u32 = 5;
 pub const FD_PREIMAGE_WRITE: u32 = 6;
 pub const MIPS_EBADF:u32  = 9;
 
-trait PreimageOracle {
+pub trait PreimageOracle {
     fn hint(&self, v: &[u8]);
     fn get_preimage(&self, k: [u8; 32]) -> Vec<u8>;
 }
 
-struct State {
-    memory: Box<Memory>,
+pub struct State {
+    pub memory: Box<Memory>,
 
     preimage_key: [u8; 32],
     preimage_offset: u32,
 
     /// the 32 general purpose registers of MIPS.
-    registers: [u32; 32],
+    pub registers: [u32; 32],
     /// the pc register stores the current execution instruction address.
-    pc: u32,
+    pub pc: u32,
     /// the next pc stores the next execution instruction address.
     next_pc: u32,
     /// the hi register stores the multiplier/divider result high(remainder) part.
@@ -54,9 +58,126 @@ struct State {
     last_hint: Vec<u8>,
 }
 
+impl Display for State {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "State {{ \n pc: 0x{:x}, next_pc: 0x{:x}, hi: {}, lo: {}, heap: 0x{:x}, step: {}, exited: {}, \
+            \n registers: {:?} \
+            \n memory: {} \n}}",
+            self.pc, self.next_pc, self.hi, self.lo, self.heap, self.step, self.exited, self.registers, self.memory.usage()
+        )
+    }
+}
+
+impl State {
+    pub fn new() -> Box<Self> {
+        Box::new(Self{
+            memory: Box::new(Memory::new()),
+            preimage_key: Default::default(),
+            preimage_offset: 0,
+            registers: Default::default(),
+            pc: 0,
+            next_pc: 4,
+            hi: 0,
+            lo: 0,
+            heap: 0,
+            step: 0,
+            exited: false,
+            exit_code: 0,
+            last_hint: Default::default(),
+        })
+    }
+
+    pub fn encode_witness(&mut self) -> Vec<u8> {
+        let mut out = Vec::<u8>::new();
+        let mem_root = self.memory.merkle_root();
+        out.extend(mem_root);
+        out.extend(self.preimage_key.clone());
+        out.extend(self.preimage_offset.to_be_bytes());
+        out.extend(self.pc.to_be_bytes());
+        out.extend(self.next_pc.to_be_bytes());
+        out.extend(self.lo.to_be_bytes());
+        out.extend(self.hi.to_be_bytes());
+        out.extend(self.heap.to_be_bytes());
+        out.push(self.exit_code);
+        if self.exited {
+            out.push(1);
+        } else {
+            out.push(0);
+        }
+        out.extend(self.step.to_be_bytes());
+        for register in self.registers {
+            out.extend(register.to_be_bytes());
+        }
+        out
+    }
+
+    pub fn load_elf(f: elf::ElfBytes<AnyEndian>) -> Box<Self> {
+        let mut s = Box::new(Self {
+            memory: Box::new(Memory::new()),
+            registers: Default::default(),
+
+            preimage_key: Default::default(),
+            preimage_offset: 0,
+
+            pc: f.ehdr.e_entry as u32,
+            next_pc: f.ehdr.e_entry as u32 + 4,
+
+            hi: 0,
+            lo: 0,
+            heap: 0x20000000,
+            step: 0,
+            exited: false,
+            exit_code: 0,
+            last_hint: Default::default(),
+        });
+
+        let segments = f.segments()
+            .expect("invalid ELF cause failed to parse segments.");
+        for segment in segments {
+            if segment.p_type == 0x70000003 {
+                continue;
+            }
+
+            let r = f.segment_data(&segment).expect("failed to parse segment data");
+            let mut r = Vec::from(r);
+
+            if segment.p_filesz != segment.p_memsz {
+                if segment.p_type == PT_LOAD {
+                    if segment.p_filesz < segment.p_memsz {
+                        let diff = (segment.p_memsz-segment.p_filesz) as usize;
+                        r.extend_from_slice(vec![0u8; diff].as_slice());
+                    } else {
+                        panic!("invalid PT_LOAD program segment, file size ({}) > mem size ({})",
+                               segment.p_filesz, segment.p_memsz);
+                    }
+                } else {
+                    panic!("has different file size ({}) than mem size ({}): filling for non PT_LOAD segments is not supported",
+                           segment.p_filesz, segment.p_memsz);
+                }
+            }
+
+            if segment.p_vaddr + segment.p_memsz >= 1u64 << 32 {
+                panic!("program %d out of 32-bit mem range: {:x} -{:x} (size: {:x})",
+                       segment.p_vaddr, segment.p_memsz, segment.p_memsz);
+            }
+
+            let r: Box<&[u8]>= Box::from(r.as_slice());
+            s.memory.set_memory_range(segment.p_vaddr as u32, r).expect(
+                "failed to set memory range"
+            );
+
+            println!("set memory at addr: 0x{:x}, filesz: 0x{:x}, memsz: 0x{:x}",
+                     segment.p_vaddr, segment.p_filesz, segment.p_memsz);
+        }
+        s
+    }
+}
+
 pub struct InstrumentedState {
     /// state stores the state of the MIPS emulator
-    state: State,
+    pub state: Box<State>,
 
     /// writer for stdout
     stdout_writer: Box<dyn Write>,
@@ -78,18 +199,49 @@ pub struct InstrumentedState {
     last_preimage_offset: u32,
 }
 
+impl Display for InstrumentedState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "state: {}, last_mem_access: {}, proof_enabled: {}",
+            self.state, self.last_mem_access, self.mem_proof_enabled
+        )
+    }
+}
+
 impl InstrumentedState {
+    pub fn new(
+        state: Box<State>,
+        preimage_oracle: Box<dyn PreimageOracle>
+    ) -> Box<Self> {
+        let is = Box::new(Self{
+            state,
+            stdout_writer: Box::new(stdout()),
+            stderr_writer: Box::new(stderr()),
+            last_mem_access: !(0u32),
+            mem_proof_enabled: true,
+            mem_proof: [0; 28*32],
+            preimage_oracle,
+            last_preimage: Vec::<u8>::new(),
+            last_preimage_key: [0; 32],
+            last_preimage_offset: 0,
+        });
+        is
+    }
+
     fn track_memory_access(&mut self, addr: u32) {
         if self.mem_proof_enabled && self.last_mem_access != addr {
-            panic!("unexpected different memory access at {:x?}, \
-            already have access at {:x?} buffered", addr, self.last_mem_access);
+            if self.last_mem_access != !(0u32) {
+                panic!("unexpected different memory access at {:x?}, \
+                    already have access at {:x?} buffered", addr, self.last_mem_access);
+            }
         }
         self.last_mem_access = addr;
         self.mem_proof = self.state.memory.merkle_proof(addr);
     }
 
     // (data, data_len) = self.read_preimage(self.state.preimage_key, self.state.preimage_offset)
-    pub fn read_preimage(&mut self, key: [u8; 32], offset: u32) -> ([u8; 32], u32) {
+    fn read_preimage(&mut self, key: [u8; 32], offset: u32) -> ([u8; 32], u32) {
         if key != self.last_preimage_key {
             self.last_preimage_key = key;
             let data = self.preimage_oracle.get_preimage(key);
@@ -275,11 +427,7 @@ impl InstrumentedState {
         self.state.next_pc = self.state.next_pc + 4;
     }
 
-    pub fn handle_branch(&mut self, opcode: u32, insn: u32, rt_reg: u32, rs: u32) {
-        if insn != 0 && insn != 1 {
-            panic!("invalid insn when process branch on req imm, insn: {}", insn);
-        }
-
+    fn handle_branch(&mut self, opcode: u32, insn: u32, rt_reg: u32, rs: u32) {
         let should_branch = match opcode {
             4 | 5 => { // beq/bne
                 let rt = self.state.registers[rt_reg as usize];
@@ -295,8 +443,10 @@ impl InstrumentedState {
                 let rtv = (insn >> 16) & 0x1F;
                 if rtv == 0 { // bltz
                     (rs as i32) < 0
-                } else { // 1 -> bgez
+                } else if rtv == 1 { // 1 -> bgez
                     (rs as i32) >= 0
+                } else {
+                    false
                 }
             }
             _ => {
@@ -314,7 +464,7 @@ impl InstrumentedState {
         }
     }
 
-    pub fn handle_jump(&mut self, link_reg: u32, dest: u32) {
+    fn handle_jump(&mut self, link_reg: u32, dest: u32) {
         let prev_pc = self.state.pc;
         self.state.pc = self.state.next_pc;
         self.state.next_pc = dest;
@@ -325,7 +475,7 @@ impl InstrumentedState {
         }
     }
 
-    pub fn handle_hilo(&mut self, fun: u32, rs: u32, rt: u32, store_reg: u32) {
+    fn handle_hilo(&mut self, fun: u32, rs: u32, rt: u32, store_reg: u32) {
         let mut val = 0u32;
         match fun {
             0x10 => { // mfhi
@@ -371,7 +521,7 @@ impl InstrumentedState {
         self.state.next_pc = self.state.next_pc + 4;
     }
 
-    pub fn handle_rd(&mut self, store_reg: u32, val: u32, conditional: bool) {
+    fn handle_rd(&mut self, store_reg: u32, val: u32, conditional: bool) {
         if store_reg >=32 {
             panic!("invalid register");
         }
@@ -383,7 +533,7 @@ impl InstrumentedState {
         self.state.next_pc = self.state.next_pc + 4;
     }
 
-    pub fn mips_step(&mut self) {
+    fn mips_step(&mut self) {
         if self.state.exited {
             return;
         }
@@ -393,6 +543,8 @@ impl InstrumentedState {
         // fetch instruction
         let insn = self.state.memory.get_memory(self.state.pc);
         let opcode = insn >> 26; // 6-bits
+
+        println!("step: {:08} pc: 0x{:08x} instruction: 0x{:08x}", self.state.step, self.state.pc, insn);
 
         // j-type j/jal
         if opcode == 2 || opcode == 3 {
@@ -413,7 +565,7 @@ impl InstrumentedState {
         let mut rd_reg = rt_reg;
         if opcode == 0 || opcode == 0x1c {
             // R-type (stores rd)
-            rt = self.state.registers[rt as usize];
+            rt = self.state.registers[rt_reg as usize];
             rd_reg = (insn >> 11) & 0x1f;
         } else if opcode < 0x20 {
             // rt is SignExtImm
@@ -570,6 +722,9 @@ impl InstrumentedState {
                         return rs & rt; // and
                     }
                     0x25 => {
+                        return rs | rt; // or
+                    }
+                    0x26 => {
                         return rs ^ rt; // xor
                     }
                     0x27 => {
@@ -658,11 +813,37 @@ impl InstrumentedState {
             return (mem & (!mask)) | val;
         } else if opcode == 0x30 { // ll
             return mem;
-        } else if opcode == 0x38 { // lc
+        } else if opcode == 0x38 { // sc
             return rt;
         }
 
         panic!("invalid instruction, opcode: {}", opcode);
+    }
+
+    pub fn step(&mut self, proof: bool) -> Box<StepWitness> {
+        self.mem_proof_enabled = proof;
+        self.last_mem_access = !(0u32);
+        self.last_preimage_offset = !(0u32);
+
+        let mut wit: Box<StepWitness> = Default::default();
+
+        if proof {
+            let insn_proof = self.state.memory.merkle_proof(self.state.pc);
+            wit.state = self.state.encode_witness();
+            wit.mem_proof = insn_proof.to_vec();
+        }
+        self.mips_step();
+
+        if proof {
+            wit.mem_proof.extend(self.mem_proof.clone());
+            if self.last_preimage_offset != !(0u32) {
+                wit.preimage_offset = self.last_preimage_offset;
+                wit.preimage_key = self.last_preimage_key;
+                wit.preimage_value.clone_from(&self.last_preimage);
+            }
+        }
+
+        wit
     }
 }
 

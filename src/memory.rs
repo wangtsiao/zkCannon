@@ -257,7 +257,7 @@ impl Memory {
         self.count = count;
     }
 
-    pub fn set_memory_range(&mut self, mut addr: u32, mut r: Box<dyn Read>) -> Result<(), std::io::ErrorKind> {
+    pub fn set_memory_range<'a>(&mut self, mut addr: u32, mut r: Box<dyn Read+'a>) -> Result<(), std::io::ErrorKind> {
         loop {
             let page_index = addr >> PAGE_ADDR_SIZE;
             let page_addr = addr & (PAGE_ADDR_MASK as u32);
