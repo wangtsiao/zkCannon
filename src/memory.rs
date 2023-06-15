@@ -306,7 +306,7 @@ impl Read for Memory {
                 size
             }
             Some(cached_page) => {
-                let mut page = cached_page.borrow_mut();
+                let page = cached_page.borrow_mut();
                 buf.copy_from_slice(&page.data[(start as usize)..(end as usize)]);
                 end-start
             }
