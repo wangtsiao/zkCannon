@@ -27,7 +27,7 @@ mod tests {
             return;
         }
         let data = fs::read(path).expect("could not read file");
-        let data: Box<&[u8]> = Box::from(data.as_slice());
+        let data: Box<&[u8]> = Box::new(data.as_slice());
 
         let mut state = State::new();
         state.memory.set_memory_range(0, data).expect("set memory range failed");

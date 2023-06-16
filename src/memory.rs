@@ -116,7 +116,7 @@ impl Memory {
         let (hash, ok) = match self.nodes.get(&(generalized_index as u32)) {
             None => {
                 // the generalized index node is not exist, then zero hash
-                (Box::from(ZERO_HASHS[28-l].clone()), true)
+                (Box::new(ZERO_HASHS[28-l].clone()), true)
             }
             Some(node) => {
                 match node {
@@ -140,7 +140,7 @@ impl Memory {
         let left = self.merklelize_subtree(generalized_index<<1);
         let right = self.merklelize_subtree(generalized_index<<1 | 1);
         let hash = hash_pair(&left, &right);
-        self.nodes.insert(generalized_index as u32, Some(Box::from(hash)));
+        self.nodes.insert(generalized_index as u32, Some(Box::new(hash)));
         return hash;
     }
 

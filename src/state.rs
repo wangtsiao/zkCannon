@@ -163,7 +163,7 @@ impl State {
                        segment.p_vaddr, segment.p_memsz, segment.p_memsz);
             }
 
-            let r: Box<&[u8]>= Box::from(r.as_slice());
+            let r: Box<&[u8]>= Box::new(r.as_slice());
             s.memory.set_memory_range(segment.p_vaddr as u32, r).expect(
                 "failed to set memory range"
             );
