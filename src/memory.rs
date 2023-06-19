@@ -291,6 +291,7 @@ impl Read for Memory {
         let end_addr = self.addr + self.count;
 
         let page_index = self.addr >> PAGE_ADDR_SIZE;
+        // todo: fix bug, read too much
         let (start, mut end) = (self.addr & (PAGE_ADDR_MASK as u32), PAGE_SIZE as u32);
 
         if page_index == (end_addr >> PAGE_ADDR_SIZE) {
@@ -300,19 +301,23 @@ impl Read for Memory {
         let cached_page = self.page_lookup(page_index);
         let n = match cached_page {
             None => {
-                let size = end - start;
-                let zero_vec = vec![0; size as usize];
-                buf.copy_from_slice(zero_vec.as_slice());
+                let size = buf.len().min( (end - start) as usize );
+                for i in 0..size {
+                    buf[i] = 0;
+                }
                 size
             }
             Some(cached_page) => {
                 let page = cached_page.borrow_mut();
-                buf.copy_from_slice(&page.data[(start as usize)..(end as usize)]);
-                end-start
+                let size = buf.len().min( (end - start) as usize );
+                for i in 0..size {
+                    buf[i] = page.data[(start as usize)+i];
+                }
+                size
             }
         };
-        self.addr += n;
-        self.count -= n;
+        self.addr += n as u32;
+        self.count -= n as u32;
 
         Ok(n as usize)
     }

@@ -38,6 +38,20 @@ lazy_static! {
 #[derive(Debug, Clone)]
 pub struct Page([u8; PAGE_SIZE]);
 
+impl Index<usize> for Page {
+    type Output = u8;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl IndexMut<usize> for Page {
+    fn index_mut(&mut self, index: usize) -> &mut u8 {
+        &mut self.0[index]
+    }
+}
+
 impl Index<Range<usize>> for Page {
     type Output = [u8];
 

@@ -1,4 +1,4 @@
-# `mipsevm`
+# mips emulator
 
 Supported 55 instructions:
 ```
@@ -13,11 +13,14 @@ Supported 55 instructions:
 'xor', 'xori'
 ```
 
-To run:
-1. Load a program into a state, e.g. using `LoadELF`.
-2. Patch the program if necessary: e.g. using `PatchGo` for Go programs, `PatchStack` for empty initial stack, etc.
-4. Implement the `PreimageOracle` interface
-5. Instrument the emulator with the state, and pre-image oracle, using `NewInstrumentedState`
-6. Step through the instrumented state with `Step(proof)`,
-   where `proof==true` if witness data should be generated. Steps are faster with `proof==false`.
-7. Optionally repeat the step on-chain by calling `MIPS.sol` and `Oracle.sol`, using the above witness data.
+This repository acts as a spec for `zkMIPS`, a tool for generating zero knowledge proof for any
+MIPS program. Of course, the main purpose of `zkMIPS` is to prove the state transition of `EVM`.
+
+
+For this repository, it is a MIPS emulator. It utilizes merkle tree to proof the memory integrity.
+
+Here is the roadmap:
+
+- [x] implement instruction interpreter, throughly tested.
+- [ ] substitute `keccak256` in merkle tree to `poseidon`.
+

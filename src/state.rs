@@ -1,11 +1,13 @@
 use std::io::{Read, stderr, stdout, Write};
 use crate::memory::Memory;
 use crate::page::{PAGE_ADDR_MASK, PAGE_SIZE};
-use log::{debug};
+use log::{debug, warn};
 use std::cmp::min;
 use std::fmt::{Display, Formatter};
 use elf::abi::PT_LOAD;
 use elf::endian::AnyEndian;
+use rand::{Rng, thread_rng};
+use crate::pre_image::PreimageOracle;
 use crate::witness::StepWitness;
 
 pub const FD_STDIN: u32 = 0;
@@ -16,11 +18,6 @@ pub const FD_HINT_WRITE: u32 = 4;
 pub const FD_PREIMAGE_READ: u32 = 5;
 pub const FD_PREIMAGE_WRITE: u32 = 6;
 pub const MIPS_EBADF:u32  = 9;
-
-pub trait PreimageOracle {
-    fn hint(&self, v: &[u8]);
-    fn get_preimage(&self, k: [u8; 32]) -> Vec<u8>;
-}
 
 pub struct State {
     pub memory: Box<Memory>,
@@ -44,7 +41,7 @@ pub struct State {
     /// step tracks the total step has been executed.
     step: u64,
 
-    exited: bool,
+    pub exited: bool,
     exit_code: u8,
 
     // last_hint is optional metadata, and not part of the VM state itself.
@@ -113,7 +110,7 @@ impl State {
         out
     }
 
-    pub fn load_elf(f: elf::ElfBytes<AnyEndian>) -> Box<Self> {
+    pub fn load_elf(f: &elf::ElfBytes<AnyEndian>) -> Box<Self> {
         let mut s = Box::new(Self {
             memory: Box::new(Memory::new()),
             registers: Default::default(),
@@ -167,11 +164,89 @@ impl State {
             s.memory.set_memory_range(segment.p_vaddr as u32, r).expect(
                 "failed to set memory range"
             );
-
-            println!("set memory at addr: 0x{:x}, filesz: 0x{:x}, memsz: 0x{:x}",
-                     segment.p_vaddr, segment.p_filesz, segment.p_memsz);
         }
         s
+    }
+
+    pub fn patch_go(&mut self, f: &elf::ElfBytes<AnyEndian>) {
+        let symbols = f.symbol_table()
+            .expect("failed to read symbols table, cannot patch program")
+            .expect("failed to parse symbols table, cannot patch program");
+
+        for symbol in symbols.0 {
+            match symbols.1.get(symbol.st_name as usize) {
+                Ok(name) => {
+                    match name {
+                        "runtime.gcenable" | "runtime.init.5" | "runtime.main.func1" |
+                        "runtime.deductSweepCredit" | "runtime.(*gcControllerState).commit" |
+                        "github.com/prometheus/client_golang/prometheus.init" |
+                        "github.com/prometheus/client_golang/prometheus.init.0" |
+                        "github.com/prometheus/procfs.init" |
+                        "github.com/prometheus/common/model.init" |
+                        "github.com/prometheus/client_model/go.init" |
+                        "github.com/prometheus/client_model/go.init.0" |
+                        "github.com/prometheus/client_model/go.init.1" |
+                        "flag.init" |
+                        "runtime.check" => {
+                            let r:Vec<u8> = vec![0x03, 0xe0, 0x00, 0x08, 0, 0, 0, 0];
+                            let r = Box::new(r.as_slice());
+                            self.memory.set_memory_range(symbol.st_value as u32, r)
+                                .expect("set memory range failed");
+                        }
+                        "runtime.MemProfileRate" => {
+                            let r:Vec<u8> = vec![0, 0, 0, 0];
+                            let r = Box::new(r.as_slice());
+                            self.memory.set_memory_range(symbol.st_value as u32, r)
+                                .expect("set memory range failed");
+                        }
+                        _ => {}
+                    }
+                }
+                Err(e) => {
+                    warn!("parse symbol failed, {}", e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    pub fn patch_stack(&mut self) {
+        // setup stack pointer
+        let sp: u32 = 0x7fFFd000;
+
+        // allocate 1 page for the initial stack data, and 16kb = 4 pages for the stack to grow
+        let r: Vec<u8> = vec![0; 5 * PAGE_SIZE];
+        let r: Box<&[u8]> = Box::new(r.as_slice());
+
+        let addr = sp - 4 * PAGE_SIZE as u32;
+        self.memory.set_memory_range(addr, r)
+            .expect("failed to set memory range");
+
+        self.registers[29] = sp;
+
+        let mut store_mem = |addr: u32, v: u32| {
+            let mut dat = [0u8; 4];
+            dat.copy_from_slice(&v.to_be_bytes());
+            let r = Box::new(dat.as_slice());
+            self.memory.set_memory_range(addr, r)
+                .expect("failed to set memory range");
+        };
+
+        // init argc,  argv, aux on stack
+        store_mem(sp+4*1, 0x42); // argc = 0 (argument count)
+        store_mem(sp+4*2, 0x35); // argv[n] = 0 (terminating argv)
+        store_mem(sp+4*3, 0x00); // envp[term] = 0 (no env vars)
+        store_mem(sp+4*4, 0x06); // auxv[0] = _AT_PAGESZ = 6 (key)
+        store_mem(sp+4*5, 0x1000); // auxv[1] = page size of 4 KiB (value) - (== minPhysPageSize)
+        store_mem(sp+4*6, 0x1A); // auxv[2] = AT_RANDOM
+        store_mem(sp+4*7, sp+4*9); // auxv[3] = address of 16 bytes containing random value
+        store_mem(sp+4*8, 0); // auxv[term] = 0
+
+        let mut rng = thread_rng();
+        let r: [u8; 16] = rng.gen();
+        let r: Box<&[u8]> = Box::new(r.as_slice());
+        self.memory.set_memory_range(sp+4*9, r)
+            .expect("failed to set memory range");
     }
 }
 
@@ -254,10 +329,10 @@ impl InstrumentedState {
         self.last_preimage_offset = offset;
 
         let mut data = [0; 32];
-        let bytes_to_copy = &self.last_preimage[(offset as usize)..];
-        let copy_size = bytes_to_copy.len().min(data.len());
+        let bytes_to_copy = &self.last_preimage[(offset as usize)..]; // length: 32 - offset
+        let copy_size = bytes_to_copy.len().min(data.len()); // length: 32 - offset
 
-        data[..copy_size].copy_from_slice(bytes_to_copy);
+        data[..copy_size].copy_from_slice(&bytes_to_copy[..copy_size]); // equal length
         return (data, copy_size as u32);
     }
 
@@ -314,7 +389,7 @@ impl InstrumentedState {
 
                         let alignment = a1 & 3;
                         let space = 4 - alignment;
-                        data_len = min(min(data_len, space), a2);
+                        data_len = min(min(data_len, space), a2); // at most 4
 
                         let mut out_mem = mem.to_be_bytes().clone();
                         out_mem[(alignment as usize)..].copy_from_slice(&data[..(data_len as usize)]);
@@ -374,6 +449,7 @@ impl InstrumentedState {
                                 self.preimage_oracle.hint(hint.as_slice());
                             }
                         }
+                        v0 = a2;
                     }
                     FD_PREIMAGE_WRITE => {
                         let addr = a1 & 0xFFffFFfc;
@@ -383,10 +459,16 @@ impl InstrumentedState {
                         let alignment = a1 & 3;
                         let space = 4 - alignment;
                         a2 = min(a2, space); // at most write to 4 bytes
+
                         let mut key = [0; 32];
-                        key.copy_from_slice(&self.state.preimage_key[(a2 as usize)..]);
-                        let dest_slice = &mut key[(32-a2 as usize)..];
-                        dest_slice.copy_from_slice(&out_mem.to_be_bytes());
+                        for i in (a2 as usize)..32 {
+                            key[i-(a2 as usize)] = self.state.preimage_key[i];
+                        }
+                        let out_mem_be = out_mem.to_be_bytes();
+                        for i in (32-a2 as usize)..32 {
+                            key[i] = out_mem_be[i+(a2 as usize)-32];
+                        }
+
                         self.state.preimage_key = key;
                         self.state.preimage_offset = 0;
                         v0 = a2;
@@ -543,8 +625,6 @@ impl InstrumentedState {
         // fetch instruction
         let insn = self.state.memory.get_memory(self.state.pc);
         let opcode = insn >> 26; // 6-bits
-
-        println!("step: {:08} pc: 0x{:08x} instruction: 0x{:08x}", self.state.step, self.state.pc, insn);
 
         // j-type j/jal
         if opcode == 2 || opcode == 3 {
