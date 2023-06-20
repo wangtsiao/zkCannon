@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn test_execute_hello() {
-        let path = PathBuf::from("./example/bin/hello.elf");
+        let path = PathBuf::from("../../example/bin/hello.elf");
         let data = fs::read(path).expect("could not read file");
         let file = ElfBytes::<AnyEndian>::minimal_parse(
             data.as_slice()
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_execute_claim() {
-        let path = PathBuf::from("./example/bin/claim.elf");
+        let path = PathBuf::from("../../example/bin/claim.elf");
         let data = fs::read(path).expect("could not read file");
         let file = ElfBytes::<AnyEndian>::minimal_parse(
             data.as_slice()
