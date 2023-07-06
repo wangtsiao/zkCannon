@@ -44,10 +44,8 @@ pub struct Instruction {
 }
 
 impl Instruction {
-    fn to_bits(&self) -> [bool; 60] {
-        let mut u: u64 = self.addr as u64;
-        u = u<<32 | self.bytecode as u64;
-        i2lebsp::<60>(u) // omit the high 4 bits of address
+    fn to_bits(&self) -> [bool; 32] {
+        i2lebsp::<32>(self.bytecode as u64) // omit the high 4 bits of address
     }
 }
 
@@ -64,7 +62,7 @@ pub struct ProgramSegment {
 pub struct Program {
     cur_segment: usize,
     cur_instruction: usize,
-    cur_bit: usize, // each instruction has 64 bits, where 32 bits for addr, 32 bits for bytecode.
+    cur_bit: usize, // each instruction has 32 bits
     pub segments: Vec<ProgramSegment>
 }
 
@@ -83,7 +81,7 @@ impl Iterator for Program {
             let bit = ins.to_bits()[cur_bit];
 
             self.cur_bit += 1;
-            if self.cur_bit == 60 {
+            if self.cur_bit == 32 {
                 self.cur_bit = 0;
                 self.cur_instruction += 1;
                 if self.cur_instruction == self.segments[cur_segment].instructions.len() {
@@ -136,14 +134,14 @@ impl Program {
         let (mut a0, mut a1) = (init.to_le_bits(), init.to_le_bits());
         let mut t_point = init;
 
-        // each time take 32 instructions
+        // each time take 50 instructions
         // init: a0, a1 to Q
         // x  = hash(a0 | a1 | 28 bits address | 32 bits instruction)
         // a0 = a1
         // a1 = x
         // <---[-----]
         // [a0, a1, x]
-        for chunk in &self.into_iter().chunks(60 * 32) {
+        for chunk in &self.into_iter().chunks(50 * 32) {
             t_point = hasher.hash(
                 iter::empty()
                     .chain(a0)
