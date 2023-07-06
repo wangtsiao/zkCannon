@@ -465,6 +465,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -522,11 +531,16 @@ dependencies = [
  "clap",
  "elf",
  "env_logger",
+ "ff",
+ "group",
  "hex",
+ "itertools",
  "lazy_static",
  "log",
+ "pasta_curves",
  "rand",
  "sha3 0.10.8",
+ "subtle",
 ]
 
 [[package]]

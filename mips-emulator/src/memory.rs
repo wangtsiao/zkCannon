@@ -319,7 +319,6 @@ impl Read for Memory {
         self.addr += n as u32;
         self.count -= n as u32;
 
-        Ok(n as usize)
+        Ok(n)
     }
 }
-

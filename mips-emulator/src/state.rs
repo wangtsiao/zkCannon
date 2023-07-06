@@ -8,7 +8,7 @@ use elf::abi::PT_LOAD;
 use elf::endian::AnyEndian;
 use rand::{Rng, thread_rng};
 use crate::pre_image::PreimageOracle;
-use crate::witness::StepWitness;
+use crate::witness::{Program, ProgramSegment, StepWitness};
 
 pub const FD_STDIN: u32 = 0;
 pub const FD_STDOUT: u32 = 1;
@@ -110,7 +110,7 @@ impl State {
         out
     }
 
-    pub fn load_elf(f: &elf::ElfBytes<AnyEndian>) -> Box<Self> {
+    pub fn load_elf(f: &elf::ElfBytes<AnyEndian>) -> (Box<Self>, Box<Program>) {
         let mut s = Box::new(Self {
             memory: Box::new(Memory::new()),
             registers: Default::default(),
@@ -129,6 +129,8 @@ impl State {
             exit_code: 0,
             last_hint: Default::default(),
         });
+
+        let mut program = Box::from(Program::new());
 
         let segments = f.segments()
             .expect("invalid ELF cause failed to parse segments.");
@@ -160,12 +162,23 @@ impl State {
                        segment.p_vaddr, segment.p_memsz, segment.p_memsz);
             }
 
+            let n = r.len();
             let r: Box<&[u8]>= Box::new(r.as_slice());
             s.memory.set_memory_range(segment.p_vaddr as u32, r).expect(
                 "failed to set memory range"
             );
+
+            if n != 0 {
+                program.segments.push(
+                    ProgramSegment {
+                        start_addr: segment.p_vaddr as u32,
+                        segment_size: n as u32,
+                        instructions: vec![],
+                    }
+                )
+            }
         }
-        s
+        (s, program)
     }
 
     pub fn patch_go(&mut self, f: &elf::ElfBytes<AnyEndian>) {

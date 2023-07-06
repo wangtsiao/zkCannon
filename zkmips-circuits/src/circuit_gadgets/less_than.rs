@@ -187,7 +187,7 @@ impl<F: Field, const N_BYTES: usize> Chip<F> for LtChip<F, N_BYTES> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use eth_types::Field;
+    use crate::mips_types::Field;
     use halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner, Value},
         dev::MockProver,

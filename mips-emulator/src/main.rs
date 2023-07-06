@@ -16,6 +16,7 @@ mod state;
 mod tests;
 mod witness;
 mod pre_image;
+mod sinsemilla;
 
 #[derive(Default)]
 struct Oracle { }
@@ -47,10 +48,15 @@ fn main() {
     let file = ElfBytes::<AnyEndian>::minimal_parse(
         data.as_slice()
     ).expect("opening elf file failed");
-    let mut state = State::load_elf(&file);
+
+    let (mut state, mut program) = State::load_elf(&file);
 
     state.patch_go(&file);
     state.patch_stack();
+
+    program.load_instructions(&mut state);
+    let hash_of_program = program.compute_hash();
+    info!("hash of program: {:?}", hash_of_program);
 
     let preimage_oracle = Box::new(Oracle::default());
     let mut instrumented_state = InstrumentedState::new(state, preimage_oracle);
