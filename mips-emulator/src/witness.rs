@@ -66,6 +66,8 @@ pub struct Program {
     pub segments: Vec<ProgramSegment>
 }
 
+pub const PERSONALIZATION: &str = "ProgramCRH";
+
 impl Iterator for Program {
     type Item = bool;
 
@@ -122,39 +124,69 @@ impl Program {
         }
     }
 
+    pub fn reset_iterator(&mut self) {
+        self.cur_segment = 0;
+        self.cur_instruction = 0;
+        self.cur_bit = 0;
+    }
+
+    pub fn total_instructions(&self) -> usize {
+        let mut sum = 0;
+        for i in 0..self.segments.len() {
+            sum += self.segments[i].instructions.len();
+        }
+        sum
+    }
+
+    // side effect: change iterator variables
+    pub fn next_instruction(&self,
+                            cur_segment: usize,
+                            cur_instruction: usize) -> (Option<Instruction>, usize, usize) {
+
+        let mut res_segment = cur_segment;
+        let mut res_instruction = cur_instruction;
+
+        let res = if res_segment >= self.segments.len() {
+            (None, res_segment, res_instruction)
+        } else {
+            let ins = self.segments[res_segment].instructions[res_instruction];
+
+            res_instruction += 1;
+            if res_instruction == self.segments[res_segment].instructions.len() {
+                res_instruction = 0;
+                res_segment += 1;
+            }
+
+            (Some(ins), res_segment, res_instruction)
+        };
+
+        res
+    }
+
     pub fn compute_hash(&mut self) -> Base {
         use super::sinsemilla::HashDomain;
-        const PERSONALIZATION: &str = "ProgramCRH";
         let hasher = HashDomain::new(PERSONALIZATION);
 
         let init = hasher.Q.to_affine()
             .coordinates()
             .map(|c| *c.x()).unwrap();
 
-        let (mut a0, mut a1) = (init.to_le_bits(), init.to_le_bits());
-        let mut t_point = init;
+        let mut a0 = init;
 
-        // each time take 50 instructions
-        // init: a0, a1 to Q
-        // x  = hash(a0 | a1 | 28 bits address | 32 bits instruction)
-        // a0 = a1
-        // a1 = x
-        // <---[-----]
-        // [a0, a1, x]
-        for chunk in &self.into_iter().chunks(50 * 32) {
-            t_point = hasher.hash(
+        // each time take 60 instructions
+        // init: a0 to Q
+        // a0  = hash(a0 | 60 * 32 bits instruction)
+        for chunk in &self.into_iter().chunks(60 * 32) {
+            a0 = hasher.hash(
                 iter::empty()
-                    .chain(a0)
-                    .chain(a1)
+                    .chain(a0.to_le_bits().into_iter().take(250))
                     .chain(chunk.into_iter())
             ).unwrap();
-            a0 = a1;
-            a1 = t_point.to_le_bits();
         }
-
-        t_point
+        a0
     }
 }
+
 
 #[derive(Copy, Clone)]
 pub struct ExecutionRow {

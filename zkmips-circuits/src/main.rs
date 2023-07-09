@@ -1,5 +1,4 @@
-mod mips_types;
-mod circuit_gadgets;
+mod program;
 
 fn main() {
     println!("Hello, world!");
