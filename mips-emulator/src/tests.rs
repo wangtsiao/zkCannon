@@ -1,13 +1,20 @@
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::fs;
-    use std::iter::zip;
-    use std::path::PathBuf;
-    use elf::ElfBytes;
-    use elf::endian::AnyEndian;
-    use sha3::{Digest, Keccak256};
-    use sha3::digest::{FixedOutputReset, Reset};
+    use std::{
+        collections::HashMap,
+        fs,
+        iter::zip,
+        path::{PathBuf, Path},
+    };
+    use elf::{
+        ElfBytes,
+        endian::AnyEndian,
+    };
+    use sha3::{
+        Digest,
+        Keccak256,
+        digest::{FixedOutputReset, Reset}
+    };
     use crate::pre_image::{Keccak256Key, Key, LocalIndexKey, PreimageOracle};
     use crate::state::{InstrumentedState, State};
 
@@ -189,21 +196,30 @@ mod tests {
     #[test]
     fn test_execute_open_mips() {
         for file_name in fs::read_dir("./open_mips_tests/test/bin/").unwrap() {
-            execute_open_mips(file_name.unwrap().path());
+            let file_name_path_buf = file_name.unwrap().path();
+            if file_name_path_buf.ends_with(Path::new("oracle.bin")) {
+                continue;
+            }
+            println!("testing: {:?}", &file_name_path_buf);
+            execute_open_mips(file_name_path_buf);
         }
     }
 
     #[test]
     fn test_execute_hello() {
-        let path = PathBuf::from("../../example/bin/hello.elf");
+        let path = PathBuf::from("./example/bin/hello.elf");
         let data = fs::read(path).expect("could not read file");
         let file = ElfBytes::<AnyEndian>::minimal_parse(
             data.as_slice()
         ).expect("opening elf file failed");
-        let mut state = State::load_elf(&file);
+        let (mut state, mut program) = State::load_elf(&file);
 
         state.patch_go(&file);
         state.patch_stack();
+
+        program.load_instructions(&mut state);
+        let hash_of_program = program.compute_hash();
+        println!("hash of program: {:?}", hash_of_program);
 
         let preimage_oracle = Box::new(TestOracle::default());
         let mut instrumented_state = InstrumentedState::new(state, preimage_oracle);
@@ -218,15 +234,19 @@ mod tests {
 
     #[test]
     fn test_execute_claim() {
-        let path = PathBuf::from("../../example/bin/claim.elf");
+        let path = PathBuf::from("./example/bin/claim.elf");
         let data = fs::read(path).expect("could not read file");
         let file = ElfBytes::<AnyEndian>::minimal_parse(
             data.as_slice()
         ).expect("opening elf file failed");
-        let mut state = State::load_elf(&file);
+        let (mut state, mut program) = State::load_elf(&file);
 
         state.patch_go(&file);
         state.patch_stack();
+
+        program.load_instructions(&mut state);
+        let hash_of_program = program.compute_hash();
+        println!("hash of program: {:?}", hash_of_program);
 
         let preimage_oracle = Box::new(claim_test_oracle());
         let mut instrumented_state = InstrumentedState::new(state, preimage_oracle);

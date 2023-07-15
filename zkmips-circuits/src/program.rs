@@ -39,13 +39,13 @@ use mips_emulator::witness::{
     Program,
     PERSONALIZATION,
 };
-use crate::program::chip::{ProgramChip, ProgramConfig};
+use crate::program::chip::{HashRoundChip, HashRoundConfig};
 
 
 /// Instructions to check the sinsemilla hash correct execution.
 /// The sinsemilla hash instance is `K`-bit words.
 /// The sinsemilla hash instance can process `MAX_WORDS` words.
-pub trait ProgramInstructions<
+pub trait HashRoundInstructions<
     C: CurveAffine,
     const K: usize,
     const MAX_WORDS: usize
@@ -69,14 +69,14 @@ pub trait ProgramInstructions<
 
 /// Gadget representing a program chunk
 #[derive(Clone, Debug)]
-pub struct ProgramChunk <
+pub struct HashChunk<
     C: CurveAffine,
     ProgramChip,
     const K: usize,
     const MAX_WORDS: usize,
     const PAR: usize
 > where
-    ProgramChip: ProgramInstructions<C, K, MAX_WORDS> + Clone,
+    ProgramChip: HashRoundInstructions<C, K, MAX_WORDS> + Clone,
 {
     chips: [ProgramChip; PAR],
     domain: ProgramChip::HashDomains,
@@ -86,21 +86,21 @@ pub struct ProgramChunk <
 
 impl <
     C: CurveAffine,
-    ProgramChip,
+    HashRoundChip,
     const K: usize,
     const MAX_WORDS: usize,
     const PAR: usize
-> ProgramChunk<C, ProgramChip, K, MAX_WORDS, PAR>
+> HashChunk<C, HashRoundChip, K, MAX_WORDS, PAR>
 where
-    ProgramChip: ProgramInstructions<C, K, MAX_WORDS> + Clone,
+    HashRoundChip: HashRoundInstructions<C, K, MAX_WORDS> + Clone,
 {
-    /// Constructs a [`ProgramChunk`]
+    /// Constructs a [`HashChunk`]
     ///
     /// A circuit may have more columns available than are required by a single
     /// `ProgramChip`. To make better use of the available circuit area.
     pub fn construct(
-        chips: [ProgramChip; PAR],
-        domain: ProgramChip::HashDomains,
+        chips: [HashRoundChip; PAR],
+        domain: HashRoundChip::HashDomains,
         chunk: Vec<C::Base>,
     ) -> Self {
         assert_ne!(PAR, 0);
@@ -112,27 +112,28 @@ where
     }
 }
 
+const HASH_CHUNK_LEN: usize = 60;
 
 impl <
     C: CurveAffine,
-    ProgramChip,
+    HashRoundChip,
     const K: usize,
     const MAX_WORDS: usize,
     const PAR: usize
-> ProgramChunk<C, ProgramChip, K, MAX_WORDS, PAR>
+> HashChunk<C, HashRoundChip, K, MAX_WORDS, PAR>
     where
-        ProgramChip: ProgramInstructions<C, K, MAX_WORDS> + Clone,
+        HashRoundChip: HashRoundInstructions<C, K, MAX_WORDS> + Clone,
 {
     pub fn calculate_chunk_hash(
         &self,
-        init: ProgramChip::Var,
+        init: HashRoundChip::Var,
         mut layouter: impl Layouter<C::Base>,
-    ) -> Result<ProgramChip::Var, Error> {
+    ) -> Result<HashRoundChip::Var, Error> {
         // currently, chunk refers to instruction.
         // each instruction is 32 bit length, so we take 60 instructions as a chunk.
 
-        assert_eq!(self.chunk.len() % 60, 0);
-        let chunk_length = self.chunk.len() / 60;
+        assert_eq!(self.chunk.len() % HASH_CHUNK_LEN, 0);
+        let chunk_length = self.chunk.len() / HASH_CHUNK_LEN;
 
         let chunks_per_chip = (chunk_length + PAR - 1) / PAR;
 
@@ -146,9 +147,6 @@ impl <
         let chunk = &self.chunk;
         let two_power_32 = Value::known(C::Base::from(1<<32));
         let two_power_16 = Value::known(C::Base::from(1<<16));
-        let invert_two_power_16 = Value::known(
-            C::Base::from(1<<16).invert().unwrap()
-        );
 
         let mut r = 0;
         while r < self.chunk.len() {
@@ -159,10 +157,28 @@ impl <
                     v = v + Value::known(chunk[r+i]);
                 }
                 v = v * two_power_16;
-                let high_16_bit = Value::known(chunk[r+7]) * invert_two_power_16;
-                let low_16_bit  = Value::known(chunk[r+7]) - high_16_bit;
+
+                // decompose the chunk[r+7] to high 16 bits and low 16 bits
+                let chunk_7_str = format!("{:?}", chunk[r+7]);
+                let chunk_7_len = chunk_7_str.len();
+                let chunk_7_slice = &chunk_7_str.as_bytes()[chunk_7_len-8..];
+                let mut high_16_bit = 0u32;
+                for k in 0..4 {
+                    high_16_bit <<= 4;
+                    let t = if chunk_7_slice[k] >= '0' as u8 &&  chunk_7_slice[k] <= '9' as u8 {
+                        chunk_7_slice[k] - '0' as u8
+                    } else {
+                        10 + chunk_7_slice[k] - 'a' as u8
+                    };
+                    high_16_bit |= t as u32;
+                }
+
+                let high_16_bit = Value::known(C::Base::from(high_16_bit as u64));
+                let low_16_bit  = Value::known(chunk[r+7]) - (high_16_bit * two_power_16);
                 v = v + low_16_bit;  // plus low 16 bit
                 decomposed_chunk.push(v);
+
+                // println!("v: {:?}", v);
 
                 let mut v = Value::known(C::Base::from(0));
                 v = v + high_16_bit; // plus high 16 bit
@@ -171,10 +187,11 @@ impl <
                     v = v + Value::known(chunk[r+i]);
                 }
                 decomposed_chunk.push(v);
+                // println!("v: {:?}", v);
 
                 r += 15;
             }
-            // r increase 60 every loop, and store 8 element
+            // r increase 60=4*15 every loop, and store 8 element
         }
 
         let mut pre = init;
@@ -242,6 +259,7 @@ struct BaseField;
 struct Short;
 
 impl FullWidth {
+    #[allow(dead_code)]
     fn from_pallas_generator() -> Self {
         FullWidth(*BASE, &ZS_AND_US)
     }
@@ -332,8 +350,8 @@ struct ProgramTableConfig {
     a: Column<Advice>,   // store constant in this column
 
     // not sure whether put sinsemilla hash table here.
-    //     // actually, we have two sinsemilla chips here, we need to share the data to the two chips.
-    hash_config: [ProgramConfig<ProgramHashDomain, ProgramCommitDomain, ProgramFixedBases>; 2],
+    // actually, we have two sinsemilla chips here, we need to share the data to the two chips.
+    hash_config: [HashRoundConfig<ProgramHashDomain, ProgramCommitDomain, ProgramFixedBases>; 2],
     instance: Column<Instance>,
     constants: Column<Fixed>,
 }
@@ -345,6 +363,7 @@ struct ProgramTableChip<F: PrimeFieldBits> {
 }
 
 
+#[allow(dead_code)]
 impl ProgramTableChip<pallas::Base> {
     pub fn construct(config: ProgramTableConfig) -> Self {
         Self {
@@ -416,13 +435,13 @@ impl ProgramTableChip<pallas::Base> {
             range_check,
         );
 
-        let program_config_1 = ProgramChip::configure(
+        let program_config_1 = HashRoundChip::configure(
             meta,
             advices[5..].try_into().unwrap(),
             sinsemilla_config_1
         );
 
-        let program_config_2 = ProgramChip::configure(
+        let program_config_2 = HashRoundChip::configure(
             meta,
             advices[..5].try_into().unwrap(),
             sinsemilla_config_2
@@ -439,6 +458,7 @@ impl ProgramTableChip<pallas::Base> {
     }
 
     /// load the program witness struct into the circuit table
+    #[allow(dead_code)]
     pub fn load_private_program(
         &self,
         layouter: &mut impl Layouter<pallas::Base>,
@@ -484,11 +504,12 @@ impl ProgramTableChip<pallas::Base> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn calculate_final_hash(
         &self,
         layouter: impl Layouter<pallas::Base>,
         q_cell: AssignedCell<pallas::Base, pallas::Base>,
-        chips: [ProgramChip<ProgramHashDomain, ProgramCommitDomain, ProgramFixedBases>; 2],
+        chips: [HashRoundChip<ProgramHashDomain, ProgramCommitDomain, ProgramFixedBases>; 2],
         program: &Program,
     ) -> Result<AssignedCell<pallas::Base, pallas::Base>, Error> {
 
@@ -533,7 +554,7 @@ impl ProgramTableChip<pallas::Base> {
             }
         }
 
-        let program_chunk = ProgramChunk::construct(
+        let program_chunk = HashChunk::construct(
             chips, ProgramHashDomain, chunk
         );
 
@@ -562,7 +583,7 @@ mod tests {
     use mips_emulator::state::State;
     use mips_emulator::witness::{Instruction, Program, ProgramSegment};
     use crate::program::{ProgramCommitDomain, ProgramFixedBases, ProgramHashDomain, ProgramTableChip, ProgramTableConfig, Q};
-    use crate::program::chip::ProgramChip;
+    use crate::program::chip::HashRoundChip;
 
     struct MyCircuit {
         program: Program
@@ -594,8 +615,8 @@ mod tests {
             chip.load_private_program(&mut layouter, &self.program)?;
 
             // construct program chip
-            let chip_1 = ProgramChip::construct(config.hash_config[0].clone());
-            let chip_2 = ProgramChip::construct(config.hash_config[1].clone());
+            let chip_1 = HashRoundChip::construct(config.hash_config[0].clone());
+            let chip_2 = HashRoundChip::construct(config.hash_config[1].clone());
 
             let q_cell = layouter.assign_region(|| "Q", |mut region|{
                 let a = region.assign_advice_from_instance(
@@ -609,7 +630,10 @@ mod tests {
 
             // todo: ensure the calculated final hash equal to hash in instance column
             let hash = chip.calculate_final_hash(layouter, q_cell, [chip_1, chip_2], &self.program)?;
-            println!("computed hash {:?}", hash.value());
+
+            hash.value().map(|h| {
+                println!("hash by circuit: {:?}", h);
+            });
 
             Ok(())
         }
@@ -621,21 +645,77 @@ mod tests {
         program.segments.push(
             ProgramSegment {
                 start_addr: 0,
-                segment_size: 0x08,
+                segment_size: 0x40,
                 instructions: vec![
                     Instruction {
                         addr: 0x00000000,
-                        bytecode: 0x00000001,
+                        bytecode: 0x76543210,
                     },
                     Instruction {
                         addr: 0x00000004,
+                        bytecode: 0xfedcba98,
+                    },
+                    Instruction {
+                        addr: 0x00000008,
+                        bytecode: 0x76543210,
+                    },
+                    Instruction {
+                        addr: 0x0000000c,
                         bytecode: 0x00000002,
-                    }
+                    },
+                    Instruction {
+                        addr: 0x00000010,
+                        bytecode: 0x76543210,
+                    },
+                    Instruction {
+                        addr: 0x00000014,
+                        bytecode: 0x00000004,
+                    },
+                    Instruction {
+                        addr: 0x00000018,
+                        bytecode: 0x76543210,
+                    },
+                    Instruction {
+                        addr: 0x0000001c,
+                        bytecode: 0xcdef1234,
+                    },
+                    Instruction {
+                        addr: 0x00000020,
+                        bytecode: 0x76543210,
+                    },
+                    Instruction {
+                        addr: 0x00000024,
+                        bytecode: 0x00000008,
+                    },
+                    Instruction {
+                        addr: 0x00000028,
+                        bytecode: 0x76543210,
+                    },
+                    Instruction {
+                        addr: 0x0000002c,
+                        bytecode: 0x0000000a,
+                    },
+                    Instruction {
+                        addr: 0x00000030,
+                        bytecode: 0x76543210,
+                    },
+                    Instruction {
+                        addr: 0x00000034,
+                        bytecode: 0x0000000c,
+                    },
+                    Instruction {
+                        addr: 0x00000038,
+                        bytecode: 0x76543210,
+                    },
+                    Instruction {
+                        addr: 0x0000003c,
+                        bytecode: 0x0000000e,
+                    },
                 ]
             }
         );
 
-        let circuit = MyCircuit {
+        let mut circuit = MyCircuit {
             program
         };
 
@@ -643,9 +723,13 @@ mod tests {
         let coor = Q.clone().coordinates().unwrap();
         let prover = MockProver::run(11, &circuit, vec![vec![*coor.x()]]).unwrap();
         prover.assert_satisfied();
+
+        let res = circuit.program.compute_hash();
+        println!("hash by program: {:?}", res);
     }
 
     #[test]
+    #[cfg(feature = "dev-graph")]
     fn print_simple_program() {
         use plotters::prelude::*;
 
@@ -695,6 +779,8 @@ mod tests {
         state.patch_stack();
 
         program.load_instructions(&mut state);
+        let res = program.compute_hash();
+        println!("hash by program: {:?}", res);
 
         let circuit = MyCircuit {
             program: *program
@@ -707,6 +793,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "dev-graph")]
     fn print_hello_world() {
         let path = PathBuf::from("../mips-emulator/example/bin/hello.elf");
         let data = fs::read(path).expect("could not read file");

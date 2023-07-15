@@ -553,7 +553,7 @@ impl InstrumentedState {
         self.state.pc = self.state.next_pc; // execute the delay slot first
         if should_branch  {
             // then continue with the instruction the branch jumps to.
-            self.state.next_pc = prev_pc + 4 + (sign_extension(insn&0xFFFF, 16) << 2);
+            self.state.next_pc = (prev_pc as u64 + 4u64 + (sign_extension(insn & 0xFFFF, 16) << 2) as u64) as u32;
         } else {
             self.state.next_pc = self.state.next_pc + 4;
         }
@@ -687,7 +687,7 @@ impl InstrumentedState {
         let mut mem: u32 = 0;
         if opcode >= 0x20 {
             // M[R[rs]+SignExtImm]
-            rs += sign_extension(insn&0xffFF, 16);
+            rs = (rs as u64 + sign_extension(insn&0xffFF, 16) as u64) as u32;
             let addr = rs & 0xFFffFFfc;
             self.track_memory_access(addr);
             mem = self.state.memory.get_memory(addr);
@@ -806,10 +806,10 @@ impl InstrumentedState {
                 // R-type (ArithLog)
                 match fun {
                     0x20 | 0x21 => {
-                        return rs + rt; // add or addu
+                        return (rs as u64 + rt as u64) as u32; // add or addu
                     }
                     0x22 | 0x23 => {
-                        return rs - rt; // sub or subu
+                        return (rs as i64 - rt as i64) as u32; // sub or subu
                     }
                     0x24 => {
                         return rs & rt; // and
@@ -843,7 +843,7 @@ impl InstrumentedState {
                 return rt << 16; // lui
             } else if opcode == 0x1c { // SPECIAL2
                 if fun == 2 { // mul
-                    return ((rs as i32) * (rt as i32)) as u32;
+                    return ((rs as i64) * (rt as i64)) as u32;
                 }
                 if fun == 0x20 || fun == 0x21 { // clo
                     if fun == 0x20 {

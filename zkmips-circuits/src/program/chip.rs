@@ -12,11 +12,11 @@ use halo2_proofs::{
     halo2curves::pasta::pallas,
     plonk::{Advice, Column, ConstraintSystem, Error},
 };
-use crate::program::ProgramInstructions;
+use crate::program::HashRoundInstructions;
 
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProgramConfig<Hash, Commit, Fixed>
+pub struct HashRoundConfig<Hash, Commit, Fixed>
 where
     Hash: HashDomains<pallas::Affine>,
     Fixed: FixedPoints<pallas::Affine>,
@@ -27,22 +27,22 @@ where
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProgramChip<Hash, Commit, Fixed>
+pub struct HashRoundChip<Hash, Commit, Fixed>
 where
     Hash: HashDomains<pallas::Affine>,
     Fixed: FixedPoints<pallas::Affine>,
     Commit: CommitDomains<pallas::Affine, Fixed, Hash>,
 {
-    config: ProgramConfig<Hash, Commit, Fixed>
+    config: HashRoundConfig<Hash, Commit, Fixed>
 }
 
-impl<Hash, Commit, Fixed> Chip<pallas::Base> for ProgramChip<Hash, Commit, Fixed>
+impl<Hash, Commit, Fixed> Chip<pallas::Base> for HashRoundChip<Hash, Commit, Fixed>
 where
     Hash: HashDomains<pallas::Affine>,
     Fixed: FixedPoints<pallas::Affine>,
     Commit: CommitDomains<pallas::Affine, Fixed, Hash>,
 {
-    type Config = ProgramConfig<Hash, Commit, Fixed>;
+    type Config = HashRoundConfig<Hash, Commit, Fixed>;
     type Loaded = ();
 
     fn config(&self) -> &Self::Config {
@@ -54,35 +54,35 @@ where
     }
 }
 
-impl<Hash, Commit, F> ProgramChip<Hash, Commit, F>
+impl<Hash, Commit, F> HashRoundChip<Hash, Commit, F>
 where
     Hash: HashDomains<pallas::Affine>,
     F: FixedPoints<pallas::Affine>,
     Commit: CommitDomains<pallas::Affine, F, Hash>,
 {
     pub fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        _meta: &mut ConstraintSystem<pallas::Base>,
         sinsemilla_advices: [Column<Advice>; 5],
         sinsemilla_config: SinsemillaConfig<Hash, Commit, F>,
-    ) -> ProgramConfig<Hash, Commit, F> {
+    ) -> HashRoundConfig<Hash, Commit, F> {
         // All five advice columns are equality-enabled by SinsemillaConfig.
 
         // todo: check that pieces have been decomposed correctly for sinsemilla hash
 
-        ProgramConfig {
+        HashRoundConfig {
             advices: sinsemilla_advices,
             sinsemilla_config
         }
     }
 
-    pub fn construct(config: ProgramConfig<Hash, Commit, F>) -> Self {
-        ProgramChip { config }
+    pub fn construct(config: HashRoundConfig<Hash, Commit, F>) -> Self {
+        HashRoundChip { config }
     }
 }
 
 impl<Hash, Commit, F>
-    ProgramInstructions<pallas::Affine, { sinsemilla::K }, { sinsemilla::C }>
-    for ProgramChip<Hash, Commit, F>
+    HashRoundInstructions<pallas::Affine, { sinsemilla::K }, { sinsemilla::C }>
+    for HashRoundChip<Hash, Commit, F>
 where
     Hash: HashDomains<pallas::Affine> + Eq,
     F: FixedPoints<pallas::Affine>,
@@ -105,12 +105,12 @@ where
         let mut chunks_pieces = Vec::with_capacity(9);
         chunks_pieces.push(pre.inner());
 
-        // chunk is 8 length 230 bit data
+        // chunk is 8 length 240 bit data
         for chunk in chunks.into_iter() {
             let chunk_piece = MessagePiece::from_subpieces(
                 self.clone(),
                 layouter.namespace(|| "witness chunk"),
-                [RangeConstrained::bitrange_of(chunk.as_ref(), 0..230)]
+                [RangeConstrained::bitrange_of(chunk.as_ref(), 0..240)]
             )?;
             chunks_pieces.push( chunk_piece.inner() );
         }
@@ -129,7 +129,7 @@ where
     }
 }
 
-impl<Hash, Commit, F> UtilitiesInstructions<pallas::Base> for ProgramChip<Hash, Commit, F>
+impl<Hash, Commit, F> UtilitiesInstructions<pallas::Base> for HashRoundChip<Hash, Commit, F>
     where
         Hash: HashDomains<pallas::Affine>,
         F: FixedPoints<pallas::Affine>,
@@ -139,7 +139,7 @@ impl<Hash, Commit, F> UtilitiesInstructions<pallas::Base> for ProgramChip<Hash, 
 }
 
 impl<Hash, Commit, F> SinsemillaInstructions<pallas::Affine, { sinsemilla::K }, { sinsemilla::C }>
-for ProgramChip<Hash, Commit, F>
+for HashRoundChip<Hash, Commit, F>
     where
         Hash: HashDomains<pallas::Affine>,
         F: FixedPoints<pallas::Affine>,
