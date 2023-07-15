@@ -8,7 +8,7 @@ use elf::abi::PT_LOAD;
 use elf::endian::AnyEndian;
 use rand::{Rng, thread_rng};
 use crate::pre_image::PreimageOracle;
-use crate::witness::{Program, ProgramSegment, StepWitness};
+use crate::witness::{ExecutionRow, Instruction, MemoryAccess, MemoryOperation, Program, ProgramSegment, StepWitness};
 
 pub const FD_STDIN: u32 = 0;
 pub const FD_STDOUT: u32 = 1;
@@ -277,7 +277,6 @@ pub struct InstrumentedState {
     /// indicates whether enable memory proof.
     mem_proof_enabled: bool,
     /// merkle proof for memory, depth is 28.
-    // todo: not sure the poseidon hash length, maybe not 32 bytes.
     mem_proof: [u8; 28*32],
 
     preimage_oracle: Box<dyn PreimageOracle>,
@@ -628,16 +627,35 @@ impl InstrumentedState {
         self.state.next_pc = self.state.next_pc + 4;
     }
 
-    fn mips_step(&mut self) {
+    // returns a ExecutionRow and MemoryAccess struct
+    // this method executes a single mips instruction
+    fn mips_step(&mut self) -> (Option<ExecutionRow>, Option<MemoryAccess>) {
         if self.state.exited {
-            return;
+            return (None, None);
         }
 
         self.state.step += 1;
 
+        let mut execution_row = ExecutionRow::default();
+
         // fetch instruction
         let insn = self.state.memory.get_memory(self.state.pc);
         let opcode = insn >> 26; // 6-bits
+
+        // set the instruction to execution row.
+        execution_row.instruction = Instruction {
+            addr: self.state.pc,
+            bytecode: insn,
+        };
+        // set the execution step to execution row.
+        execution_row.step = self.state.step;
+        // set the registers after execution to execution row.
+        execution_row.registers = self.state.registers.clone();
+        // set the heap, exited flag, hi, lo to execution row.
+        execution_row.heap = self.state.heap;
+        execution_row.exited = self.state.exited;
+        execution_row.hi = self.state.hi;
+        execution_row.lo = self.state.lo;
 
         // j-type j/jal
         if opcode == 2 || opcode == 3 {
@@ -646,7 +664,10 @@ impl InstrumentedState {
                 _ => { 0 }
             };
 
-            return self.handle_jump(link_reg, sign_extension(insn&0x03ffFFff, 26)<<2);
+            self.handle_jump(link_reg, sign_extension(insn & 0x03ffFFff, 26)<<2);
+            execution_row.pc = self.state.pc;
+            execution_row.next_pc = self.state.next_pc;
+            return (Some(execution_row), None);
         }
 
         // fetch register
@@ -678,8 +699,13 @@ impl InstrumentedState {
         }
 
         if (opcode >= 4 && opcode < 8) || opcode == 1 {
-            return self.handle_branch(opcode, insn, rt_reg, rs);
+            self.handle_branch(opcode, insn, rt_reg, rs);
+            execution_row.pc = self.state.pc;
+            execution_row.next_pc = self.state.next_pc;
+            return (Some(execution_row), None);
         }
+
+        let mut mem_access: Option<MemoryAccess> = None;
 
         let mut store_addr: u32 = 0xffFFffFF;
         // memory fetch (all I-type)
@@ -697,6 +723,13 @@ impl InstrumentedState {
                 // store opcodes don't write back to a register
                 rd_reg = 0;
             }
+
+            // create the memory access operation
+            mem_access = Some(MemoryAccess {
+                addr,
+                op: MemoryOperation::Read,
+                value: mem,
+            });
         }
 
         // ALU
@@ -709,25 +742,50 @@ impl InstrumentedState {
                     9=> {rd_reg},
                     _=> {0}
                 };
-                return self.handle_jump(link_reg, rs);
+
+                self.handle_jump(link_reg, rs);
+                execution_row.pc = self.state.pc;
+                execution_row.next_pc = self.state.next_pc;
+                return (Some(execution_row), mem_access);
             }
 
             if fun == 0xa {
-                return self.handle_rd(rd_reg, rs, rt == 0);
+                self.handle_rd(rd_reg, rs, rt == 0);
+                execution_row.pc = self.state.pc;
+                execution_row.next_pc = self.state.next_pc;
+                execution_row.registers = self.state.registers.clone();
+                return (Some(execution_row), mem_access);
             }
             if fun == 0xb {
-                return self.handle_rd(rd_reg, rs, rt != 0);
+                self.handle_rd(rd_reg, rs, rt != 0);
+                execution_row.pc = self.state.pc;
+                execution_row.next_pc = self.state.next_pc;
+                execution_row.registers = self.state.registers.clone();
+                return (Some(execution_row), mem_access);
             }
 
             // syscall (can read/write)
             if fun == 0xc {
-                return self.handle_syscall();
+                self.handle_syscall();
+                execution_row.heap = self.state.heap;
+                execution_row.exited = self.state.exited;
+                execution_row.pc = self.state.pc;
+                execution_row.next_pc = self.state.next_pc;
+                execution_row.registers = self.state.registers.clone();
+                // todo: trace the memory access
+                return (Some(execution_row), mem_access);
             }
 
             // lo and hi registers
             // can write back
             if fun >= 0x10 && fun < 0x1c {
-                return self.handle_hilo(fun, rs, rt, rd_reg);
+                self.handle_hilo(fun, rs, rt, rd_reg);
+                execution_row.pc = self.state.pc;
+                execution_row.next_pc = self.state.next_pc;
+                execution_row.registers = self.state.registers.clone();
+                execution_row.hi = self.state.hi;
+                execution_row.lo = self.state.lo;
+                return (Some(execution_row), mem_access);
             }
         }
 
@@ -740,10 +798,20 @@ impl InstrumentedState {
         if store_addr != 0xffFFffFF {
             self.track_memory_access(store_addr);
             self.state.memory.set_memory(store_addr, val);
+
+            mem_access = Some(MemoryAccess {
+                addr: store_addr,
+                op: MemoryOperation::Write,
+                value: val,
+            });
         }
 
         // write back the value to the destination register
-        return self.handle_rd(rd_reg, val, true);
+        self.handle_rd(rd_reg, val, true);
+        execution_row.pc = self.state.pc;
+        execution_row.next_pc = self.state.next_pc;
+        execution_row.registers = self.state.registers.clone();
+        return (Some(execution_row), mem_access);
     }
 
     fn execute(&mut self, insn: u32, mut rs: u32, rt: u32, mem: u32) -> u32 {
@@ -913,7 +981,7 @@ impl InstrumentedState {
         panic!("invalid instruction, opcode: {}", opcode);
     }
 
-    pub fn step(&mut self, proof: bool) -> Box<StepWitness> {
+    pub fn step(&mut self, proof: bool) -> (Box<StepWitness>, Option<ExecutionRow>, Option<MemoryAccess>) {
         self.mem_proof_enabled = proof;
         self.last_mem_access = !(0u32);
         self.last_preimage_offset = !(0u32);
@@ -925,7 +993,8 @@ impl InstrumentedState {
             wit.state = self.state.encode_witness();
             wit.mem_proof = insn_proof.to_vec();
         }
-        self.mips_step();
+
+        let (execution_row, mem_access) = self.mips_step();
 
         if proof {
             wit.mem_proof.extend(self.mem_proof.clone());
@@ -936,7 +1005,7 @@ impl InstrumentedState {
             }
         }
 
-        wit
+        (wit, execution_row, mem_access)
     }
 }
 

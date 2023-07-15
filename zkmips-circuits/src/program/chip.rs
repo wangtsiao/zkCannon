@@ -75,6 +75,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn construct(config: HashRoundConfig<Hash, Commit, F>) -> Self {
         HashRoundChip { config }
     }

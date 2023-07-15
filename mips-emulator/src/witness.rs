@@ -47,7 +47,7 @@ pub fn i2lebsp<const NUM_BITS: usize>(int: u64) -> [bool; NUM_BITS] {
 
 
 /// MIPS Instruction, it is fixed length, i.e., 32-bits.
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, Debug)]
 pub struct Instruction {
     pub addr: u32,
     pub bytecode: u32,
@@ -327,20 +327,22 @@ impl Program {
 
 /// ExecutionRow contains a instruction executed, and the registers state after execution
 /// pc, next_pc, heap and exited flag.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default, Debug)]
 pub struct ExecutionRow {
     pub instruction: Instruction,
-    pub step: u32,
+    pub step: u64,
     pub registers: [u32; MIPS_REGISTERS_NUM],
     pub pc: u32,
     pub next_pc: u32,
     pub heap: u32,
     pub exited: bool,
+    pub hi: u32,
+    pub lo: u32,
 }
 
 
 /// Operation to memory access, Read/Write
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum MemoryOperation {
     Read,
     Write,
@@ -350,7 +352,7 @@ pub enum MemoryOperation {
 /// A memory access, contains the address, operation type, and the value returns.
 /// If the access is Read, then `value` is the read result.
 /// If the access is Write, then `value` is the write value.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct MemoryAccess {
     pub addr: u32,
     pub op: MemoryOperation,

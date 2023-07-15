@@ -2,7 +2,6 @@ mod chip;
 
 use std::marker::PhantomData;
 use group::{Curve, Group};
-use group::ff::Field;
 
 use halo2_gadgets::{
     ecc::{
@@ -79,6 +78,7 @@ pub struct HashChunk<
     ProgramChip: HashRoundInstructions<C, K, MAX_WORDS> + Clone,
 {
     chips: [ProgramChip; PAR],
+    #[allow(dead_code)]
     domain: ProgramChip::HashDomains,
     chunk: Vec<C::Base>,
 }
@@ -342,6 +342,7 @@ impl FixedPoint<pallas::Affine> for Short {
 /// struct and load the program into plonkish table.
 /// 1. load the program to a lookup table.
 /// 2. copy the table content to sinsemilla hash table.
+#[allow(dead_code)]
 #[derive(Clone)]
 struct ProgramTableConfig {
     // to check whether a given (address, instruction) in the below two lookup table
