@@ -1943,8 +1943,10 @@ dependencies = [
  "group",
  "halo2_gadgets",
  "halo2_proofs",
+ "itertools",
  "lazy_static",
  "mips_emulator",
+ "num-traits",
  "plotters",
  "strum",
 ]

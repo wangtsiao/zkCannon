@@ -392,6 +392,7 @@ impl InstrumentedState {
                     FD_STDIN => {
                         // leave v0 and v1 zero: read nothing, no error
                     }
+                    // todo: track memory write
                     FD_PREIMAGE_READ => { // pre-image oracle
                         let addr = a1 & 0xFFffFFfc; // align memory
                         self.track_memory_access(addr);
@@ -424,6 +425,7 @@ impl InstrumentedState {
                 // args: a0 = fd, a1 = addr, a2 = count
                 // returns: v0 = written, v1 = err code
                 match a0 {
+                    // todo: track memory read
                     FD_STDOUT => {
                         self.state.memory.read_memory_range(a1, a2);
                         match std::io::copy(self.state.memory.as_mut(), self.stdout_writer.as_mut()) {
@@ -726,9 +728,11 @@ impl InstrumentedState {
 
             // create the memory access operation
             mem_access = Some(MemoryAccess {
+                rw_counter: self.state.step,
                 addr,
                 op: MemoryOperation::Read,
                 value: mem,
+                value_prev: mem,
             });
         }
 
@@ -796,13 +800,16 @@ impl InstrumentedState {
 
         // write memory
         if store_addr != 0xffFFffFF {
+            let value_prev = self.state.memory.get_memory(store_addr);
             self.track_memory_access(store_addr);
             self.state.memory.set_memory(store_addr, val);
 
             mem_access = Some(MemoryAccess {
+                rw_counter: self.state.step,
                 addr: store_addr,
                 op: MemoryOperation::Write,
                 value: val,
+                value_prev,
             });
         }
 
