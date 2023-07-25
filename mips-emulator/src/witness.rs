@@ -354,16 +354,30 @@ pub enum MemoryOperation {
 /// If the access is Write, then `value` is the write value.
 #[derive(Copy, Clone, Debug)]
 pub struct MemoryAccess {
+    pub rw_counter: u64,
     pub addr: u32,
     pub op: MemoryOperation,
     pub value: u32,
+    pub value_prev: u32,
+}
+
+impl Default for MemoryAccess {
+    fn default() -> Self {
+        Self {
+            rw_counter: 0,
+            addr: 0,
+            op: MemoryOperation::Read,
+            value: 0,
+            value_prev: 0,
+        }
+    }
 }
 
 
 /// Trace is the input to zk prover, which means we can separate the vm execution
 /// and proof generation.
 /// The trace contains the program struct, the execution trace list, the memory access list.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Trace {
     pub prog: Program,            // program table
     pub exec: Vec<ExecutionRow>,  // executed instructions

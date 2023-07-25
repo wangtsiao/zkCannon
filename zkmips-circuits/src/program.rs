@@ -348,6 +348,8 @@ struct ProgramTableConfig {
     // to check whether a given (address, instruction) in the below two lookup table
     addrs: TableColumn,        // store addresses as a lookup table
     instructions: TableColumn, // store instructions as a lookup table
+
+    // todo: remove it after knowing how to get AssignedCell from a table
     a: Column<Advice>,   // store constant in this column
 
     // not sure whether put sinsemilla hash table here.
@@ -721,8 +723,8 @@ mod tests {
         };
 
         println!("created circuit start running");
-        let coor = Q.clone().coordinates().unwrap();
-        let prover = MockProver::run(11, &circuit, vec![vec![*coor.x()]]).unwrap();
+        let coordinates = Q.clone().coordinates().unwrap();
+        let prover = MockProver::run(11, &circuit, vec![vec![*coordinates.x()]]).unwrap();
         prover.assert_satisfied();
 
         let res = circuit.program.compute_hash();
@@ -788,8 +790,8 @@ mod tests {
         };
 
         println!("created circuit start running");
-        let coor = Q.clone().coordinates().unwrap();
-        let prover = MockProver::run(19, &circuit, vec![vec![*coor.x()]]).unwrap();
+        let coordinates = Q.clone().coordinates().unwrap();
+        let prover = MockProver::run(19, &circuit, vec![vec![*coordinates.x()]]).unwrap();
         prover.assert_satisfied();
     }
 
